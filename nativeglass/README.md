@@ -2,7 +2,7 @@
 
 This rewrite styles the built-in iOS 18 Control Center module containers. It does not add a Connectivity page, page-break modules, or replacement Wi-Fi/Bluetooth/Airplane Mode controls. Apple's modules continue to own their layout, controls, state, and actions.
 
-The tweak finds the stock material views inside each module and adds a small adaptive sheen and rim. It has no LiquidAss dependency. On iOS 18 this is a glass-inspired treatment built on the system material; it is not Apple's native iOS 26 Liquid Glass renderer.
+The tweak hooks both the stock module container and Control Center's module collection, then adds an adaptive sheen and rim to each built-in module surface. It has no LiquidAss dependency. On iOS 18 this is a glass-inspired treatment built on the system material; it is not Apple's native iOS 26 Liquid Glass renderer.
 
 ## Target
 

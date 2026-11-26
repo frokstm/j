@@ -7,9 +7,14 @@
 @interface CCUIContentModuleContainerView : UIView
 @end
 
+@interface CCUIModuleCollectionView : UICollectionView
+@end
+
 static const void *kCC26ChromeLayerKey = &kCC26ChromeLayerKey;
 static void (*CC26OriginalContainerLayout)(CCUIContentModuleContainerView *, SEL);
-static BOOL sCC26HookInstalled = NO;
+static void (*CC26OriginalCollectionLayout)(CCUIModuleCollectionView *, SEL);
+static BOOL sCC26ContainerHookInstalled = NO;
+static BOOL sCC26CollectionHookInstalled = NO;
 static NSUInteger sCC26HookAttempts = 0;
 
 static BOOL CC26IsMaterialSurface(UIView *view) {
@@ -45,6 +50,7 @@ static CALayer *CC26ChromeLayer(UIView *view) {
     chrome = [CALayer layer];
     chrome.name = @"ControlCenter26.GlassChrome";
     chrome.masksToBounds = YES;
+    chrome.zPosition = 1.0;
 
     CAGradientLayer *sheen = [CAGradientLayer layer];
     sheen.name = @"ControlCenter26.GlassSheen";
@@ -77,7 +83,7 @@ static void CC26StyleSurface(UIView *view, BOOL useSheen) {
     BOOL reduced = UIAccessibilityIsReduceTransparencyEnabled();
     BOOL dark = view.traitCollection.userInterfaceStyle != UIUserInterfaceStyleLight;
 
-    CGFloat shine = reduced ? 0.025 : (dark ? 0.13 : 0.24);
+    CGFloat shine = reduced ? 0.035 : (dark ? 0.22 : 0.30);
     UIColor *mid = [UIColor colorWithWhite:1.0 alpha:reduced ? 0.008 : (dark ? 0.025 : 0.045)];
     UIColor *edge = [UIColor colorWithWhite:(dark ? 1.0 : 0.0)
                                       alpha:(dark ? 0.19 : 0.10)];
@@ -96,33 +102,38 @@ static void CC26StyleSurface(UIView *view, BOOL useSheen) {
     rim.path = [UIBezierPath bezierPathWithRoundedRect:rimRect
                                           cornerRadius:MAX(0.0, radius - 0.5)].CGPath;
     rim.strokeColor = edge.CGColor;
+
+    // Draw a native CALayer border as well as the chrome rim. This stays visible even when
+    // Control Center inserts an internal backdrop view above our decorative sublayer.
+    view.layer.cornerRadius = radius;
+    view.layer.cornerCurve = kCACornerCurveContinuous;
+    view.layer.borderWidth = 1.0;
+    view.layer.borderColor = edge.CGColor;
 }
 
 static void CC26StyleModule(UIView *container) {
     if (!container || !container.window) return;
 
-    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithArray:container.subviews];
-    NSUInteger visited = 0;
-    NSUInteger styled = 0;
+    // The module container is the stable outer surface for stock and third-party modules.
+    // Style it directly so the treatment does not depend on private backdrop class names.
+    CC26StyleSurface(container, YES);
 
-    while (queue.count && visited++ < 240) {
-        UIView *view = queue.firstObject;
-        [queue removeObjectAtIndex:0];
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithArray:container.subviews];
+    NSUInteger next = 0;
+    NSUInteger visited = 0;
+
+    while (next < queue.count && visited++ < 400) {
+        UIView *view = queue[next++];
         if (view.hidden || view.alpha < 0.01 || CGRectIsEmpty(view.bounds)) continue;
 
         if (CC26IsMaterialSurface(view)) {
             CC26StyleSurface(view, YES);
-            styled++;
             // A material view's own descendants are content, not separate module surfaces.
             continue;
         }
 
         [queue addObjectsFromArray:view.subviews];
     }
-
-    // A few stock and third-party modules draw their background directly on the container.
-    // Give those a subtle rim while leaving their controls and hit testing untouched.
-    if (styled == 0) CC26StyleSurface(container, NO);
 }
 
 static void CC26ContainerLayout(CCUIContentModuleContainerView *self, SEL cmd) {
@@ -130,19 +141,53 @@ static void CC26ContainerLayout(CCUIContentModuleContainerView *self, SEL cmd) {
     CC26StyleModule((UIView *)self);
 }
 
+static void CC26StyleModulesInCollection(UIView *collection) {
+    if (!collection || !collection.window) return;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithArray:collection.subviews];
+    NSUInteger next = 0;
+    NSUInteger visited = 0;
+    while (next < queue.count && visited++ < 1200) {
+        UIView *view = queue[next++];
+        if ([NSStringFromClass(view.class) isEqualToString:@"CCUIContentModuleContainerView"]) {
+            CC26StyleModule(view);
+            continue;
+        }
+        [queue addObjectsFromArray:view.subviews];
+    }
+}
+
+static void CC26CollectionLayout(CCUIModuleCollectionView *self, SEL cmd) {
+    if (CC26OriginalCollectionLayout) CC26OriginalCollectionLayout(self, cmd);
+    CC26StyleModulesInCollection((UIView *)self);
+}
+
 static void CC26TryInstallHook(void) {
-    if (sCC26HookInstalled) return;
-    Class containerClass = objc_getClass("CCUIContentModuleContainerView");
-    if (containerClass) {
-        MSHookMessageEx(containerClass,
-                        @selector(layoutSubviews),
-                        (IMP)CC26ContainerLayout,
-                        (IMP *)&CC26OriginalContainerLayout);
-        sCC26HookInstalled = CC26OriginalContainerLayout != NULL;
+    if (!sCC26ContainerHookInstalled) {
+        Class containerClass = objc_getClass("CCUIContentModuleContainerView");
+        if (containerClass) {
+            MSHookMessageEx(containerClass,
+                            @selector(layoutSubviews),
+                            (IMP)CC26ContainerLayout,
+                            (IMP *)&CC26OriginalContainerLayout);
+            sCC26ContainerHookInstalled = CC26OriginalContainerLayout != NULL;
+        }
     }
 
-    if (!sCC26HookInstalled && sCC26HookAttempts++ < 60) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+    if (!sCC26CollectionHookInstalled) {
+        Class collectionClass = objc_getClass("CCUIModuleCollectionView");
+        if (collectionClass) {
+            MSHookMessageEx(collectionClass,
+                            @selector(layoutSubviews),
+                            (IMP)CC26CollectionLayout,
+                            (IMP *)&CC26OriginalCollectionLayout);
+            sCC26CollectionHookInstalled = CC26OriginalCollectionLayout != NULL;
+        }
+    }
+
+    if (!sCC26ContainerHookInstalled && !sCC26CollectionHookInstalled) {
+        sCC26HookAttempts++;
+        NSTimeInterval delay = MIN(1.0 + (double)sCC26HookAttempts * 0.25, 8.0);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ CC26TryInstallHook(); });
     }
 }
