@@ -1,0 +1,71 @@
+name: Build rootless arm64e package
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          brew install make xz ldid dpkg
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install Theos
+        run: |
+          git clone --depth 1 --recurse-submodules https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
+          echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
+
+      - name: Extract prepared source
+        run: |
+          mkdir -p "$RUNNER_TEMP/cc26-source"
+          unzip -q "$GITHUB_WORKSPACE/ControlCenter26-iOS18-arm64e-native-source.zip" -d "$RUNNER_TEMP/cc26-source"
+
+      - name: Build the package
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/cc26-source"
+          gmake clean package FINALPACKAGE=1
+          packages=(packages/*.deb)
+          test "${#packages[@]}" -eq 1
+          echo "DEB_PATH=$RUNNER_TEMP/cc26-source/${packages[0]}" >> "$GITHUB_ENV"
+
+      - name: Verify rootless package and arm64e-only Mach-O slices
+        run: |
+          set -euo pipefail
+          package_arch="$(dpkg-deb --field "$DEB_PATH" Architecture)"
+          test "$package_arch" = "iphoneos-arm64"
+          mkdir -p "$RUNNER_TEMP/package-root"
+          dpkg-deb --extract "$DEB_PATH" "$RUNNER_TEMP/package-root"
+          : > "$RUNNER_TEMP/verified-mach-o-files.txt"
+          find "$RUNNER_TEMP/package-root" -type f -print0 | while IFS= read -r -d '' binary; do
+            description="$(file -b "$binary")"
+            case "$description" in
+              *Mach-O*)
+                archs="$(xcrun lipo -archs "$binary")"
+                echo "$binary: $archs"
+                test "$archs" = "arm64e"
+                echo "$binary" >> "$RUNNER_TEMP/verified-mach-o-files.txt"
+                ;;
+            esac
+          done
+          test -s "$RUNNER_TEMP/verified-mach-o-files.txt"
+          shasum -a 256 "$DEB_PATH"
+
+      - name: Upload the .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ControlCenter26-iOS18-rootless-arm64e
+          path: ${{ runner.temp }}/cc26-source/packages/*.deb
+          if-no-files-found: error
+          retention-days: 14
