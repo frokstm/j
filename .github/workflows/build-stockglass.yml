@@ -1,0 +1,70 @@
+name: Build stock-module glass tweak
+
+on:
+  push:
+    branches: [liquid-glass-rewrite]
+    paths:
+      - "nativeglass/**"
+      - ".github/workflows/build-stockglass.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          brew install make xz ldid dpkg
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install Theos
+        run: |
+          git clone --depth 1 --recurse-submodules https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
+          echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
+
+      - name: Build the package
+        working-directory: nativeglass
+        run: |
+          set -euo pipefail
+          gmake clean package FINALPACKAGE=1
+          packages=(packages/*.deb)
+          test "${#packages[@]}" -eq 1
+          echo "DEB_PATH=${packages[0]}" >> "$GITHUB_ENV"
+
+      - name: Verify rootless package and arm64e-only Mach-O slices
+        run: |
+          set -euo pipefail
+          package_arch="$(dpkg-deb --field "nativeglass/$DEB_PATH" Architecture)"
+          test "$package_arch" = "iphoneos-arm64"
+          mkdir -p "$RUNNER_TEMP/package-root"
+          dpkg-deb --extract "nativeglass/$DEB_PATH" "$RUNNER_TEMP/package-root"
+          : > "$RUNNER_TEMP/verified-mach-o-files.txt"
+          find "$RUNNER_TEMP/package-root" -type f -print0 | while IFS= read -r -d '' binary; do
+            description="$(file -b "$binary")"
+            case "$description" in
+              *Mach-O*)
+                archs="$(xcrun lipo -archs "$binary")"
+                echo "$binary: $archs"
+                test "$archs" = "arm64e"
+                echo "$binary" >> "$RUNNER_TEMP/verified-mach-o-files.txt"
+                ;;
+            esac
+          done
+          test -s "$RUNNER_TEMP/verified-mach-o-files.txt"
+          shasum -a 256 "nativeglass/$DEB_PATH"
+
+      - name: Upload the .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ControlCenter26-iOS18-stockglass-arm64e
+          path: nativeglass/packages/*.deb
+          if-no-files-found: error
+          retention-days: 14
+

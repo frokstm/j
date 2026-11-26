@@ -1,0 +1,10 @@
+Package: com.controlcenter26
+Name: ControlCenter26 Liquid Glass
+Version: 2.0.0
+Architecture: iphoneos-arm64
+Description: Glass styling for the built-in iOS 18 Control Center modules
+Maintainer: ControlCenter26 contributors
+Author: ControlCenter26 contributors
+Section: Tweaks
+Depends: firmware (>= 18.0), firmware (<< 19.0), ellekit
+
